@@ -29,6 +29,20 @@ contract Transposer is CCIPReceiver {
         uint256 epoch;
     }
 
+    struct WithdrawParams {
+        uint256 deposit;
+        address depositReceiver;
+        address withdrawReceiver;
+        uint256 gasLimit;
+        address feeToken;
+    }
+
+    struct WithdrawMessage {
+        address outToken;
+        uint256 amount;
+        address receiver;
+    }
+
     struct TranspositionParams {
         address inToken;
         address outToken;
@@ -55,12 +69,12 @@ contract Transposer is CCIPReceiver {
     mapping(uint256 => DepositData) private _deposits;
     uint256 private _totalDeposits;
     
-    // In chain => In token => Out token => Tokens balances
-    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _epochAmounts;
+    // In chain => In token => Out token => Epoch ID => Tokens balances
+    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _amounts;
     // In chain => In token => Out token => Epoch ID => Turnover
-    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _epochTurnover;
+    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _turnovers;
     // In chain => In token => Out token => Epoch ID => Turnover
-    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _epochRewards;
+    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _rewards;
     // In chain => In token => Out token => Total epochs
     mapping(uint64 => mapping(address => mapping(address => uint256))) private _totalEpochs;
 
@@ -73,6 +87,13 @@ contract Transposer is CCIPReceiver {
         _transposeFee = fee;
     }
 
+    function _withdrawReward(uint256 depositId) internal view returns (uint256) {
+        DepositData memory depo = _deposits[depositId];
+
+        // TODO: Multiply to reduce division errors
+        return (_amounts[_chainSelector][depo.inToken][depo.outToken][depo.epoch] / _rewards[_chainSelector][depo.inToken][depo.outToken][depo.epoch]) * depo.amount;
+    }
+
     function deposit(DepositParams memory params) external returns (uint256) {
         IERC20(params.inToken).transferFrom(
             msg.sender,
@@ -82,7 +103,7 @@ contract Transposer is CCIPReceiver {
 
         uint256 epochId = _totalEpochs[_chainSelector][params.inToken][params.outToken] + 1;
 
-        _epochAmounts[_chainSelector][params.inToken][params.outToken][epochId] += params.amount;
+        _amounts[_chainSelector][params.inToken][params.outToken][epochId] += params.amount;
 
         uint256 depositId = _totalDeposits;
         _totalDeposits++;
@@ -99,13 +120,52 @@ contract Transposer is CCIPReceiver {
         return depositId;
     }
 
-    function withdraw(uint256 depositId, address depositReceiver, address withdrawReciver) external {
-        require(msg.sender == _deposits[depositId].depositor, "Sender is not depositor!");
+    function withdraw(WithdrawParams memory params) external returns (bytes32) {
+        DepositData memory depo = _deposits[params.deposit];
 
-        // (epochAmount / rewards) * principle
+        require(msg.sender == depo.depositor, "Sender is not depositor!");
+        // Ends deposit
+        _deposits[params.deposit].depositor = address(0);
+
+        uint256 reward = _withdrawReward(params.deposit);
+        uint256 withdrawAmount = depo.amount + reward;
+
+        // TODO: Check if epoch has ended, if not withdraw correct ratio of deposited tokens
+
+        // Encode withdraw message
+        bytes memory messageData = abi.encode(
+            CCIPReceiveCallback.Transpose,
+            abi.encode(
+                WithdrawMessage({
+                    outToken: depo.outToken,
+                    amount: withdrawAmount,
+                    receiver: params.withdrawReceiver
+                })
+            )
+        );
+
+        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
+            receiver: abi.encode(address(0)), // TODO: Get cross chain withdrawal address
+            data: messageData,
+            tokenAmounts: new Client.EVMTokenAmount[](0),
+            extraArgs: Client._argsToBytes(
+                Client.EVMExtraArgsV1({
+                    gasLimit: params.gasLimit,
+                    strict: false
+                })
+            ),
+            feeToken: params.feeToken
+        });
+
+        // Send and return CCIP message ID
+        return _ccipSend(depo.outChain, message);
     }
 
-    function startTransposing(
+    function _receiveWithdraw(WithdrawMessage memory data) internal {
+        IERC20(data.outToken).transfer(data.receiver, data.amount);
+    }
+
+    function transpose(
         TranspositionParams memory params
     ) external payable returns (bytes32) {
         IERC20(params.inToken).transferFrom(
@@ -143,17 +203,51 @@ contract Transposer is CCIPReceiver {
             feeToken: params.feeToken
         });
 
+        // Send and return CCIP message ID
+        return _ccipSend(params.outChain, message);
+    }
+
+    function _receiveTranspose(
+        uint64 inChain,
+        TranspositionMessage memory data
+    ) internal {
+        uint256 epochId = _totalEpochs[inChain][data.inToken][data.outToken];
+
+        uint256 remainingTurnover = _amounts[inChain][data.inToken][data.outToken][epochId] - _turnovers[inChain][data.inToken][data.outToken][epochId];
+
+        if(data.amount > remainingTurnover) {
+            _turnovers[inChain][data.inToken][data.outToken][epochId] += remainingTurnover;
+            // TODO: Multiply to reducing rounding errors
+            _rewards[inChain][data.inToken][data.outToken][epochId] += (data.amount / data.fee) * remainingTurnover;
+
+            _totalEpochs[inChain][data.inToken][data.outToken]++;
+            epochId++;
+
+            uint256 overflowingTurnover = data.amount - remainingTurnover;
+
+            _turnovers[inChain][data.inToken][data.outToken][epochId] += overflowingTurnover;
+            // TODO: Multiply to reducing rounding errors
+            _rewards[inChain][data.inToken][data.outToken][epochId] += (data.amount / data.fee) * overflowingTurnover;
+        } else {
+            _turnovers[inChain][data.inToken][data.outToken][epochId] += data.amount;
+            _rewards[inChain][data.inToken][data.outToken][epochId] += data.fee;
+        }
+
+        IERC20(data.outToken).transfer(data.receiver, data.amount);
+    }
+
+    function _ccipSend(uint64 outChain, Client.EVM2AnyMessage memory evm2AnyMessage) internal returns (bytes32) {
         IRouterClient router = IRouterClient(_ccipRouter);
 
         // Get CCIP fees
-        uint256 ccipFee = router.getFee(params.outChain, message);
+        uint256 ccipFee = router.getFee(outChain, evm2AnyMessage);
 
-        if (params.feeToken == address(0)) {
+        if (evm2AnyMessage.feeToken == address(0)) {
             // Pay fee with native asset
             require(ccipFee <= msg.value, "Insufficient msg.value for CCIP fee!");
         } else {
             // Pay fee with ERC20
-            IERC20(params.feeToken).transferFrom(
+            IERC20(evm2AnyMessage.feeToken).transferFrom(
                 msg.sender,
                 address(this),
                 ccipFee
@@ -161,36 +255,7 @@ contract Transposer is CCIPReceiver {
         }
 
         // Send and return CCIP message ID
-        return router.ccipSend(params.outChain, message);
-    }
-
-    function _finishTransposing(
-        TranspositionMessage memory data,
-        uint64 inChain
-    ) internal {
-        uint256 epochId = _totalEpochs[inChain][data.inToken][data.outToken];
-
-        uint256 remainingTurnover = _epochAmounts[inChain][data.inToken][data.outToken][epochId] - _epochTurnover[inChain][data.inToken][data.outToken][epochId];
-
-        if(data.amount > remainingTurnover) {
-            _epochTurnover[inChain][data.inToken][data.outToken][epochId] += remainingTurnover;
-            // TODO: Multiply to reducing rounding errors
-            _epochRewards[inChain][data.inToken][data.outToken][epochId] += (data.amount / data.fee) * remainingTurnover;
-
-            _totalEpochs[inChain][data.inToken][data.outToken]++;
-            epochId++;
-
-            uint256 overflowingTurnover = data.amount - remainingTurnover;
-
-            _epochTurnover[inChain][data.inToken][data.outToken][epochId] += overflowingTurnover;
-            // TODO: Multiply to reducing rounding errors
-            _epochRewards[inChain][data.inToken][data.outToken][epochId] += (data.amount / data.fee) * overflowingTurnover;
-        } else {
-            _epochTurnover[inChain][data.inToken][data.outToken][epochId] += data.amount;
-            _epochRewards[inChain][data.inToken][data.outToken][epochId] += data.fee;
-        }
-
-        IERC20(data.outToken).transfer(data.receiver, data.amount);
+        return router.ccipSend(outChain, evm2AnyMessage);
     }
 
     function _ccipReceive(
@@ -202,16 +267,23 @@ contract Transposer is CCIPReceiver {
             (CCIPReceiveCallback, bytes)
         );
 
-        if (callback == CCIPReceiveCallback.Withdraw) {}
+        if (callback == CCIPReceiveCallback.Withdraw) {
+            WithdrawMessage memory data = abi.decode(
+                encodedData,
+                (WithdrawMessage)
+            );
+
+            _receiveWithdraw(data);
+        }
 
         if (callback == CCIPReceiveCallback.Transpose) {
-            // Decode transposition data
+            // Decode transposition message
             TranspositionMessage memory data = abi.decode(
                 encodedData,
                 (TranspositionMessage)
             );
 
-            _finishTransposing(data, any2EvmMessage.sourceChainSelector);
+            _receiveTranspose(any2EvmMessage.sourceChainSelector, data);
         }
     }
 }
