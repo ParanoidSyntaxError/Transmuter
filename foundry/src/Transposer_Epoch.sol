@@ -7,10 +7,16 @@ import {IRouterClient} from "@ccip/interfaces/IRouterClient.sol";
 import {Client} from "@ccip/libraries/Client.sol";
 import {CCIPReceiver} from "@ccip/applications/CCIPReceiver.sol";
 
-contract Transposer is CCIPReceiver {
+contract Transposer_Epoch is CCIPReceiver {
     enum CCIPReceiveCallback {
         Withdraw,
         Transpose
+    }
+
+    struct Epoch {
+        uint256 amount;
+        uint256 turnover;
+        uint256 fees;
     }
 
     struct DepositParams {
@@ -20,7 +26,7 @@ contract Transposer is CCIPReceiver {
         uint256 amount;
     }
 
-    struct DepositData {
+    struct Deposit {
         address inToken;
         address outToken;
         uint64 outChain;
@@ -65,16 +71,12 @@ contract Transposer is CCIPReceiver {
 
     address private immutable _ccipRouter;
 
-    // Deposit ID => Deposit data
-    mapping(uint256 => DepositData) private _deposits;
+    // Deposit ID => Deposit
+    mapping(uint256 => Deposit) private _deposits;
     uint256 private _totalDeposits;
     
-    // In chain => In token => Out token => Epoch ID => Tokens balances
-    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _amounts;
-    // In chain => In token => Out token => Epoch ID => Turnover
-    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _turnovers;
-    // In chain => In token => Out token => Epoch ID => Turnover
-    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => uint256)))) private _rewards;
+    // In chain => In token => Out token => Epoch ID => Epoch
+    mapping(uint64 => mapping(address => mapping(address => mapping(uint256 => Epoch)))) private _epochs;
     // In chain => In token => Out token => Total epochs
     mapping(uint64 => mapping(address => mapping(address => uint256))) private _totalEpochs;
 
@@ -87,12 +89,36 @@ contract Transposer is CCIPReceiver {
         _transposeFee = fee;
     }
 
+    function _remainingTurnover(uint256 depositId) internal view returns (uint256) {
+        Deposit memory depo = _deposits[depositId];
+        Epoch memory epoch = _epochs[_chainSelector][depo.inToken][depo.outToken][depo.epoch];
+
+        return epoch.amount - epoch.turnover;
+    }
+
     function _withdrawReward(uint256 depositId) internal view returns (uint256) {
-        DepositData memory depo = _deposits[depositId];
+        Deposit memory depo = _deposits[depositId];
+        Epoch memory epoch = _epochs[_chainSelector][depo.inToken][depo.outToken][depo.epoch];
 
         // TODO: Multiply to reduce division errors
-        return (_amounts[_chainSelector][depo.inToken][depo.outToken][depo.epoch] / _rewards[_chainSelector][depo.inToken][depo.outToken][depo.epoch]) * depo.amount;
+        return (epoch.amount / epoch.fees) * depo.amount;
     }
+
+    // TODO: Multiply to reduce division errors
+    /*
+    function _withdrawAmounts(uint256 depositId) internal view returns (uint256, uint256) {
+        Deposit memory depo = _deposits[depositId];
+        Epoch memory epoch = _epochs[_chainSelector][depo.inToken][depo.outToken][depo.epoch];
+
+        uint256 reward = _withdrawReward(depositId);
+
+        if(epoch.turnover >= epoch.amount) {
+            return (0, depo.amount + reward);
+        }
+
+        return epoch.turnover / (epoch.amount / 100);
+    }
+    */
 
     function deposit(DepositParams memory params) external returns (uint256) {
         IERC20(params.inToken).transferFrom(
@@ -103,12 +129,12 @@ contract Transposer is CCIPReceiver {
 
         uint256 epochId = _totalEpochs[_chainSelector][params.inToken][params.outToken] + 1;
 
-        _amounts[_chainSelector][params.inToken][params.outToken][epochId] += params.amount;
+        _epochs[_chainSelector][params.inToken][params.outToken][epochId].amount += params.amount;
 
         uint256 depositId = _totalDeposits;
         _totalDeposits++;
 
-        _deposits[depositId] = DepositData({
+        _deposits[depositId] = Deposit({
             inToken: params.inToken,
             outToken: params.outToken,
             outChain: params.outChain,
@@ -121,7 +147,7 @@ contract Transposer is CCIPReceiver {
     }
 
     function withdraw(WithdrawParams memory params) external returns (bytes32) {
-        DepositData memory depo = _deposits[params.deposit];
+        Deposit memory depo = _deposits[params.deposit];
 
         require(msg.sender == depo.depositor, "Sender is not depositor!");
         // Ends deposit
@@ -131,6 +157,7 @@ contract Transposer is CCIPReceiver {
         uint256 withdrawAmount = depo.amount + reward;
 
         // TODO: Check if epoch has ended, if not withdraw correct ratio of deposited tokens
+        //uint256 withdrawRatio = _withdrawRatio(params.deposit);
 
         // Encode withdraw message
         bytes memory messageData = abi.encode(
@@ -207,30 +234,32 @@ contract Transposer is CCIPReceiver {
         return _ccipSend(params.outChain, message);
     }
 
+    // TODO: This function sucks
     function _receiveTranspose(
         uint64 inChain,
         TranspositionMessage memory data
     ) internal {
         uint256 epochId = _totalEpochs[inChain][data.inToken][data.outToken];
 
-        uint256 remainingTurnover = _amounts[inChain][data.inToken][data.outToken][epochId] - _turnovers[inChain][data.inToken][data.outToken][epochId];
+        uint256 remainingTurnover = _epochs[inChain][data.inToken][data.outToken][epochId].amount - _epochs[inChain][data.inToken][data.outToken][epochId].turnover;
 
+        // TODO: Awful
         if(data.amount > remainingTurnover) {
-            _turnovers[inChain][data.inToken][data.outToken][epochId] += remainingTurnover;
+            _epochs[inChain][data.inToken][data.outToken][epochId].turnover += remainingTurnover;
             // TODO: Multiply to reducing rounding errors
-            _rewards[inChain][data.inToken][data.outToken][epochId] += (data.amount / data.fee) * remainingTurnover;
+            _epochs[inChain][data.inToken][data.outToken][epochId].fees += (data.amount / data.fee) * remainingTurnover;
 
             _totalEpochs[inChain][data.inToken][data.outToken]++;
             epochId++;
 
             uint256 overflowingTurnover = data.amount - remainingTurnover;
 
-            _turnovers[inChain][data.inToken][data.outToken][epochId] += overflowingTurnover;
+            _epochs[inChain][data.inToken][data.outToken][epochId].turnover += overflowingTurnover;
             // TODO: Multiply to reducing rounding errors
-            _rewards[inChain][data.inToken][data.outToken][epochId] += (data.amount / data.fee) * overflowingTurnover;
+            _epochs[inChain][data.inToken][data.outToken][epochId].fees += (data.amount / data.fee) * overflowingTurnover;
         } else {
-            _turnovers[inChain][data.inToken][data.outToken][epochId] += data.amount;
-            _rewards[inChain][data.inToken][data.outToken][epochId] += data.fee;
+            _epochs[inChain][data.inToken][data.outToken][epochId].turnover += data.amount;
+            _epochs[inChain][data.inToken][data.outToken][epochId].fees += data.fee;
         }
 
         IERC20(data.outToken).transfer(data.receiver, data.amount);
