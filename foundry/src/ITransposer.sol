@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-interface ITransposer {
-    enum CCIPReceiveCallback {
+import "./ITransposerAdmin.sol";
+
+interface ITransposer is ITransposerAdmin {
+    enum CCIPReceiveType {
         Withdraw,
         Transpose
     }
@@ -41,24 +43,6 @@ interface ITransposer {
     struct WithdrawMessage {
         address token;
         uint256 amount;
-        address receiver;
-    }
-
-    struct TranspositionParams {
-        address inToken;
-        address outToken;
-        uint64 outChain;
-        uint256 amount;
-        address receiver;
-        uint256 gasLimit;
-        address feeToken;
-    }
-
-    struct TranspositionMessage {
-        address inToken;
-        address outToken;
-        uint256 amount;
-        uint256 fee;
         address receiver;
     }
 }
