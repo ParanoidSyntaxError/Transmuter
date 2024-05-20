@@ -14,49 +14,74 @@ contract Transposer is ITransposer, TransposerAdmin, CCIPReceiver {
     // Deposit ID => Deposit
     mapping(uint256 => Deposit) private _deposits;
     uint256 private _totalDeposits;
-    
-    // In token => Out chain => Out token => Epoch ID => Epoch
-    mapping(address => mapping(uint64 => mapping(address => mapping(uint256 => Epoch)))) private _epochs;
-    // In token => Out chain => Out token => Total epochs
-    mapping(address => mapping(uint64 => mapping(address => uint256))) private _totalEpochs;
 
-    uint256 private immutable _transposeFee;
+    // In token => Out chain => Out token => Epoch ID => Epoch
+    mapping(address => mapping(uint64 => mapping(address => mapping(uint256 => Epoch))))
+        private _epochs;
+    // In token => Out chain => Out token => Total epochs
+    mapping(address => mapping(uint64 => mapping(address => uint256)))
+        private _totalEpochs;
+
+    uint256 private constant TRANSPOSE_FEE = 1; // 0.1%
 
     uint256 private constant MATH_SCALE = 1000;
 
-    constructor(uint64 chain, address router, uint256 fee) TransposerAdmin(chain, router) CCIPReceiver(router) {
-        _transposeFee = fee;
-    }
+    constructor(
+        uint64 chain,
+        address router
+    ) TransposerAdmin(chain, router) CCIPReceiver(router) {}
 
-    function _currentEpochId(address srcToken, uint64 destChain, address destToken) internal view returns (uint256) {
+    function _currentEpochId(
+        address srcToken,
+        uint64 destChain,
+        address destToken
+    ) internal view returns (uint256) {
         return _totalEpochs[srcToken][destChain][destToken];
     }
 
-    function _depositEpochId(address srcToken, uint64 destChain, address destToken) internal view returns (uint256) {
+    function _depositEpochId(
+        address srcToken,
+        uint64 destChain,
+        address destToken
+    ) internal view returns (uint256) {
         uint256 epochId = _currentEpochId(srcToken, destChain, destToken);
         Epoch memory epoch = _epochs[srcToken][destChain][destToken][epochId];
 
-        if((epoch.turnover / epoch.amount) * 100 >= 10) {
+        if (epoch.turnover > 0 && 100 / (epoch.amount / epoch.turnover) >= 10) {
             return epochId + 1;
         }
 
         return epochId;
     }
 
-    function _withdrawAmounts(Deposit memory depo) internal view returns (uint256 srcAmount, uint256 destAmount) {
-        uint256 currentEpochId = _currentEpochId(depo.srcToken, depo.destChain, depo.destToken);
-        Epoch memory depoEpoch = _epochs[depo.srcToken][depo.destChain][depo.destToken][depo.epochId];
+    function _withdrawAmounts(
+        Deposit memory depo
+    ) internal view returns (uint256 srcAmount, uint256 destAmount) {
+        uint256 currentEpochId = _currentEpochId(
+            depo.srcToken,
+            depo.destChain,
+            depo.destToken
+        );
+        Epoch memory depoEpoch = _epochs[depo.srcToken][depo.destChain][
+            depo.destToken
+        ][depo.epochId];
 
-        if(depoEpoch.turnover >= depoEpoch.amount) {
+        if (depoEpoch.turnover >= depoEpoch.amount) {
             destAmount = depo.amount;
         } else {
-            destAmount = (((depoEpoch.turnover * MATH_SCALE) / depoEpoch.amount) * depo.amount) / MATH_SCALE;
+            destAmount =
+                (((depoEpoch.turnover * MATH_SCALE) / depoEpoch.amount) *
+                    depo.amount) /
+                MATH_SCALE;
             srcAmount = depo.amount - destAmount;
         }
 
-        if(currentEpochId > depo.epochId) {
+        if (currentEpochId > depo.epochId) {
             // Add fees earned
-            destAmount += (((depoEpoch.fees * MATH_SCALE) / depoEpoch.amount) * depo.amount) / MATH_SCALE;
+            destAmount +=
+                (((depoEpoch.fees * MATH_SCALE) / depoEpoch.amount) *
+                    depo.amount) /
+                MATH_SCALE;
         }
     }
 
@@ -67,15 +92,25 @@ contract Transposer is ITransposer, TransposerAdmin, CCIPReceiver {
             params.amount
         );
 
-        uint256 depositEpoch = _depositEpochId(params.srcToken, params.destChain, params.destToken);
+        uint256 depositEpoch = _depositEpochId(
+            params.srcToken,
+            params.destChain,
+            params.destToken
+        );
 
         // Update epoch
-        _epochs[params.srcToken][params.destChain][params.destToken][depositEpoch].amount += params.amount;
+        _epochs[params.srcToken][params.destChain][params.destToken][
+            depositEpoch
+        ].amount += params.amount;
 
         uint256 depositId = _totalDeposits;
         _totalDeposits++;
 
-        bool late = _currentEpochId(params.srcToken, params.destChain, params.destToken) == depositEpoch;
+        bool late = _currentEpochId(
+            params.srcToken,
+            params.destChain,
+            params.destToken
+        ) == depositEpoch;
 
         _deposits[depositId] = Deposit({
             srcToken: params.srcToken,
@@ -93,25 +128,29 @@ contract Transposer is ITransposer, TransposerAdmin, CCIPReceiver {
     function withdraw(WithdrawParams memory params) external returns (bytes32) {
         Deposit memory depo = _deposits[params.depositId];
         require(msg.sender == depo.owner, "Sender is not depositor!");
-        
+
         // Ends deposit
         _deposits[params.depositId].owner = address(0);
 
         (uint256 srcAmount, uint256 destAmount) = _withdrawAmounts(depo);
 
         // If withdrawing before epoch ends deduct from epoch amount
-        if(depo.epochId == _currentEpochId(depo.srcToken, depo.destChain, depo.destToken)) {
-            _epochs[depo.srcToken][depo.destChain][depo.destToken][depo.epochId].amount -= depo.amount;
+        if (
+            depo.epochId ==
+            _currentEpochId(depo.srcToken, depo.destChain, depo.destToken)
+        ) {
+            _epochs[depo.srcToken][depo.destChain][depo.destToken][depo.epochId]
+                .amount -= depo.amount;
         }
 
-        if(params.srcReceiver != address(0) || srcAmount == 0) {
+        if (params.srcReceiver != address(0) || srcAmount == 0) {
             IERC20(depo.srcToken).transfer(params.srcReceiver, srcAmount);
         }
 
-        if(params.destReceiver != address(0) || destAmount == 0) {
+        if (params.destReceiver != address(0) || destAmount == 0) {
             // Encode withdraw message
             bytes memory messageData = abi.encode(
-                CCIPReceiveType.Transpose,
+                CCIPReceiveType.Withdraw,
                 abi.encode(
                     WithdrawMessage({
                         token: depo.destToken,
@@ -145,7 +184,10 @@ contract Transposer is ITransposer, TransposerAdmin, CCIPReceiver {
         IERC20(data.token).transfer(data.receiver, data.amount);
     }
 
-    function _ccipSend(uint64 outChain, Client.EVM2AnyMessage memory evm2AnyMessage) internal returns (bytes32) {
+    function _ccipSend(
+        uint64 outChain,
+        Client.EVM2AnyMessage memory evm2AnyMessage
+    ) internal returns (bytes32) {
         IRouterClient router = IRouterClient(ccipRouter());
 
         // Get CCIP fees
@@ -153,7 +195,10 @@ contract Transposer is ITransposer, TransposerAdmin, CCIPReceiver {
 
         if (evm2AnyMessage.feeToken == address(0)) {
             // Pay fee with native asset
-            require(ccipFee <= msg.value, "Insufficient msg.value for CCIP fee!");
+            require(
+                ccipFee <= msg.value,
+                "Insufficient msg.value for CCIP fee!"
+            );
 
             return router.ccipSend{value: ccipFee}(outChain, evm2AnyMessage);
         }
@@ -192,20 +237,74 @@ contract Transposer is ITransposer, TransposerAdmin, CCIPReceiver {
 
         if (callback == CCIPReceiveType.Transpose) {
             // Decode transposition message
+            TransposeMessage memory data = abi.decode(
+                encodedData,
+                (TransposeMessage)
+            );
 
-            // TODO
+            _receiveTranspose(data);
         }
     }
 
-    // TODO
     function transpose(
+        TransposeParams memory params
     ) external payable returns (bytes32) {
-        
+        IERC20(params.srcToken).transferFrom(
+            msg.sender,
+            address(this),
+            params.amount
+        );
+
+        uint256 fee = (params.amount / MATH_SCALE) * TRANSPOSE_FEE;
+        uint256 destAmount = params.amount - fee;
+
+        uint256 epochId = _currentEpochId(
+            params.srcToken,
+            params.destChain,
+            params.destToken
+        );
+
+        _epochs[params.srcToken][params.destChain][params.destToken][epochId].turnover += destAmount;
+        _epochs[params.srcToken][params.destChain][params.destToken][epochId].fees += fee;
+
+        Epoch memory epoch = _epochs[params.srcToken][params.destChain][params.destToken][epochId];
+
+        if(epoch.turnover >= epoch.amount) {
+            _totalEpochs[params.srcToken][params.destChain][params.destToken]++;
+        }
+
+        // Does not handle epoch rollover
+
+        // Encode transpose message
+        bytes memory messageData = abi.encode(
+            CCIPReceiveType.Transpose,
+            abi.encode(
+                TransposeMessage({
+                    token: params.destToken,
+                    amount: destAmount,
+                    receiver: params.destReceiver
+                })
+            )
+        );
+
+        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
+            receiver: abi.encode(getTransposer(params.destChain)),
+            data: messageData,
+            tokenAmounts: new Client.EVMTokenAmount[](0),
+            extraArgs: Client._argsToBytes(
+                Client.EVMExtraArgsV1({
+                    gasLimit: params.gasLimit,
+                    strict: false
+                })
+            ),
+            feeToken: params.feeToken
+        });
+
+        // Send and return CCIP message ID
+        return _ccipSend(params.destChain, message);
     }
 
-    // TODO
-    function _receiveTranspose(
-    ) internal {
-        
+    function _receiveTranspose(TransposeMessage memory data) internal {
+        IERC20(data.token).transfer(data.receiver, data.amount);
     }
 }

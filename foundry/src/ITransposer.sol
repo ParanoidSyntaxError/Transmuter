@@ -45,4 +45,20 @@ interface ITransposer is ITransposerAdmin {
         uint256 amount;
         address receiver;
     }
+
+    struct TransposeParams {
+        address srcToken;
+        uint256 amount;
+        address destToken;
+        uint64 destChain;
+        address destReceiver;
+        address feeToken;
+        uint256 gasLimit;
+    }
+
+    struct TransposeMessage {
+        address token;
+        uint256 amount;
+        address receiver;
+    }
 }
