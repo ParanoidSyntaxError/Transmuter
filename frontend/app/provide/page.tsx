@@ -1,8 +1,7 @@
 import AppBar from "@/components/app-bar";
 import Image from "next/image";
-import TransmuteCard from "@/components/transmute-card";
 
-export default function TransmutePage() {
+export default function ProvidePage() {
     return (
         <div
             className="w-full p-4"
@@ -10,7 +9,7 @@ export default function TransmutePage() {
             <div
                 className="w-full"
             >
-                <AppBar/>
+                <AppBar />
             </div>
             <div
                 className="flex flex-row items-center w-fit mx-auto mt-12 mb-4"
@@ -18,19 +17,14 @@ export default function TransmutePage() {
                 <div
                     className="text-4xl font-semibold"
                 >
-                    transmute
+                    provide
                 </div>
                 <Image
-                    src="/PortalGreen.png"
+                    src="/GermYellow.png"
                     alt=""
                     width={64}
                     height={64}
                 />
-            </div>
-            <div
-                className="max-w-96 w-full mx-auto"
-            >
-                <TransmuteCard/>
             </div>
         </div>
     );
