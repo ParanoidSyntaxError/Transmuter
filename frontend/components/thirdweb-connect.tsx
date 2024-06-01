@@ -1,6 +1,7 @@
 "use client"
 
 import { createThirdwebClient } from "thirdweb";
+import { avalancheFuji, baseSepolia, polygonAmoy, sepolia } from "thirdweb/chains";
 import { ConnectButton } from "thirdweb/react";
 import {
     createWallet,
@@ -48,6 +49,12 @@ export default function ThirdwebConnect() {
                 titleIcon: "/PortalGreen.png",
                 showThirdwebBranding: false,
             }}
+            chains={[
+                sepolia,
+                baseSepolia,
+                polygonAmoy,
+                avalancheFuji
+            ]}
         />
     );
 }

@@ -1,16 +1,17 @@
 import AppBar from "@/components/app-bar";
 import Image from "next/image";
 import TransmuteCard from "@/components/transmute-card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export default function TransmutePage() {
     return (
         <div
-            className="w-full p-4"
+            className="w-full px-4 pb-4"
         >
             <div
                 className="w-full"
             >
-                <AppBar/>
+                <AppBar />
             </div>
             <div
                 className="flex flex-row items-center w-fit mx-auto mt-12 mb-4"
@@ -30,7 +31,39 @@ export default function TransmutePage() {
             <div
                 className="max-w-96 w-full mx-auto"
             >
-                <TransmuteCard/>
+                <Tabs
+                    defaultValue="transmute"
+                    className="w-full"
+                >
+                    <TabsList
+                        className="flex w-fit mx-auto"
+                    >
+                        <TabsTrigger
+                            value="transmute"
+                        >
+                            Transmute
+                        </TabsTrigger>
+                        <TabsTrigger
+                            value="history"
+                        >
+                            History
+                        </TabsTrigger>
+                    </TabsList>
+                    <TabsContent
+                        value="transmute"
+                    >
+                        <TransmuteCard />
+                    </TabsContent>
+                    <TabsContent
+                        value="history"
+                    >
+                        <div
+                            className="text-center text-xl font-semibold mt-20"
+                        >
+                            Coming soon
+                        </div>
+                    </TabsContent>
+                </Tabs>
             </div>
         </div>
     );

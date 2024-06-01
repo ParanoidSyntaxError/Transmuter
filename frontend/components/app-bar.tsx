@@ -2,12 +2,11 @@ import ThirdwebConnect from "@/components/thirdweb-connect";
 import Link from "next/link";
 import { Button } from "./ui/button";
 import Image from "next/image";
-import { cn } from "@/lib/utils";
 
 export default function AppBar() {
     return (
         <div
-            className="flex flex-row items-center md:justify-between justify-end"
+            className="flex flex-row items-center md:justify-between justify-end h-20"
         >
             <Link
                 href="/"
