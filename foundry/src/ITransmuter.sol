@@ -9,11 +9,10 @@ interface ITransmuter is ITransmuterAdmin {
         Transmute
     }
 
-    event TransmutationInitiated(address srcToken, uint64 destChain, address destToken, uint256 amount, address destReceiver);
-    event TransmutationComplete();
+    event Transmute(bytes32 requestId, address srcToken, uint64 destChain, address destToken, uint256 amount, address destReceiver);
 
-    event Deposit(address srcToken, uint64 destChain, address destToken, uint256 amount, address depositor);
-    event Withdraw(uint256 depositId, uint256 srcAmount, uint256 destAmount, address srcReceiver, address destReceiver);
+    event Deposit(uint256 depositId, address srcToken, uint64 destChain, address destToken, uint256 amount, address depositor);
+    event Withdraw(uint256 depositId, uint256 srcAmount, uint256 destAmount, address srcReceiver, address destReceiver, bytes32 requestId);
 
     struct Epoch {
         uint256 amount;
@@ -62,14 +61,15 @@ interface ITransmuter is ITransmuterAdmin {
     }
 
     struct TransmuteMessage {
-        address token;
+        address srcToken;
+        address destToken;
         uint256 amount;
         address receiver;
     }
 
     function transmute(
         TransmuteParams memory params
-    ) external payable returns (bytes32);
+    ) external payable returns (bytes32 requestId);
 
     function deposit(DepositParams memory params) external returns (uint256 depositId);
     function withdraw(WithdrawParams memory params) external returns (bytes32 requestId);

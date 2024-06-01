@@ -29,42 +29,39 @@ contract Transmuter is ITransmuter, TransmuterAdmin, CCIPReceiver {
         address router
     ) TransmuterAdmin(chain, router) CCIPReceiver(router) {}
 
+    function transmuteFee() external pure returns (uint256) {
+        return TRANSMUTE_FEE;
+    }
+
+    function totalDeposits() external view returns (uint256) {
+        return _totalDeposits;
+    }
+
+    function epoch(address srcToken, uint64 destChain, address destToken, uint256 epochId) external view returns (Epoch memory) {
+        return _epochs[srcToken][destChain][destToken][epochId];
+    }
+
+    function totalEpochs(address srcToken, uint64 destChain, address destToken) external view returns (uint256) {
+        return _totalEpochs[srcToken][destChain][destToken];
+    }
+
     function transmute(
         TransmuteParams memory params
-    ) external payable returns (bytes32) {
+    ) external payable override returns (bytes32 requestId) {
         IERC20(params.srcToken).transferFrom(
             msg.sender,
             address(this),
             params.amount
         );
 
-        uint256 fee = (params.amount / MATH_SCALE) * TRANSMUTE_FEE;
-        uint256 destAmount = params.amount - fee;
-
-        uint256 epochId = _currentEpochId(
-            params.srcToken,
-            params.destChain,
-            params.destToken
-        );
-
-        _epochs[params.srcToken][params.destChain][params.destToken][epochId].turnover += destAmount;
-        _epochs[params.srcToken][params.destChain][params.destToken][epochId].fees += fee;
-
-        Epoch memory epoch = _epochs[params.srcToken][params.destChain][params.destToken][epochId];
-
-        if (epoch.turnover >= epoch.amount) {
-            _totalEpochs[params.srcToken][params.destChain][params.destToken]++;
-        }
-
-        // TODO: Handle epoch rollover
-
         // Encode transmute message
         bytes memory messageData = abi.encode(
             CCIPReceiveType.Transmute,
             abi.encode(
                 TransmuteMessage({
-                    token: params.destToken,
-                    amount: destAmount,
+                    srcToken: params.srcToken,
+                    destToken: params.destToken,
+                    amount: params.amount,
                     receiver: params.destReceiver
                 })
             )
@@ -83,11 +80,13 @@ contract Transmuter is ITransmuter, TransmuterAdmin, CCIPReceiver {
             feeToken: params.feeToken
         });
 
-        // Send and return CCIP message ID
-        return _ccipSend(params.destChain, message);
+        // Send CCIP message
+        requestId = _ccipSend(params.destChain, message);
+
+        emit Transmute(requestId, params.srcToken, params.destChain, params.destToken, params.amount, params.destReceiver);
     }
 
-    function deposit(DepositParams memory params) external returns (uint256) {
+    function deposit(DepositParams memory params) external override returns (uint256 depositId) {
         IERC20(params.srcToken).transferFrom(
             msg.sender,
             address(this),
@@ -103,7 +102,7 @@ contract Transmuter is ITransmuter, TransmuterAdmin, CCIPReceiver {
         // Update epoch
         _epochs[params.srcToken][params.destChain][params.destToken][depositEpoch].amount += params.amount;
 
-        uint256 depositId = _totalDeposits;
+        depositId = _totalDeposits;
         _totalDeposits++;
 
         _deposits[depositId] = DepositData({
@@ -115,10 +114,10 @@ contract Transmuter is ITransmuter, TransmuterAdmin, CCIPReceiver {
             owner: msg.sender
         });
 
-        return depositId;
+        emit Deposit(depositId, params.srcToken, params.destChain, params.destToken, params.amount, msg.sender);
     }
 
-    function withdraw(WithdrawParams memory params) external returns (bytes32) {
+    function withdraw(WithdrawParams memory params) external override returns (bytes32 requestId) {
         DepositData memory depo = _deposits[params.depositId];
         require(msg.sender == depo.owner, "Sender is not depositor!");
 
@@ -163,10 +162,10 @@ contract Transmuter is ITransmuter, TransmuterAdmin, CCIPReceiver {
             });
 
             // Send and return CCIP message ID
-            return _ccipSend(depo.destChain, message);
+            requestId = _ccipSend(depo.destChain, message);
         }
 
-        return bytes32(0);
+        emit Withdraw(params.depositId, srcAmount, destAmount, params.srcReceiver, params.destReceiver, requestId);
     }
 
     function _currentEpochId(
@@ -183,9 +182,9 @@ contract Transmuter is ITransmuter, TransmuterAdmin, CCIPReceiver {
         address destToken
     ) internal view returns (uint256) {
         uint256 epochId = _currentEpochId(srcToken, destChain, destToken);
-        Epoch memory epoch = _epochs[srcToken][destChain][destToken][epochId];
+        Epoch memory epoc = _epochs[srcToken][destChain][destToken][epochId];
 
-        if (epoch.turnover > 0 && 100 / (epoch.amount / epoch.turnover) >= 10) {
+        if (epoc.turnover > 0 && 100 / (epoc.amount / epoc.turnover) >= 10) {
             return epochId + 1;
         }
 
@@ -282,6 +281,26 @@ contract Transmuter is ITransmuter, TransmuterAdmin, CCIPReceiver {
     }
 
     function _receiveTransmute(TransmuteMessage memory data) internal {
-        IERC20(data.token).transfer(data.receiver, data.amount);
+        uint256 fee = (data.amount / MATH_SCALE) * TRANSMUTE_FEE;
+        uint256 destAmount = data.amount - fee;
+
+        uint256 epochId = _currentEpochId(
+            data.srcToken,
+            chainSelector(),
+            data.destToken
+        );
+
+        _epochs[data.srcToken][chainSelector()][data.destToken][epochId].turnover += destAmount;
+        _epochs[data.srcToken][chainSelector()][data.destToken][epochId].fees += fee;
+        
+        Epoch memory epoc = _epochs[data.srcToken][chainSelector()][data.destToken][epochId];
+
+        if (epoc.turnover >= epoc.amount) {
+            _totalEpochs[data.srcToken][chainSelector()][data.destToken]++;
+        }
+
+        // TODO: Handle epoch rollover
+
+        IERC20(data.destToken).transfer(data.receiver, destAmount);
     }
 }
