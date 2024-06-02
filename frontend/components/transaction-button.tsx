@@ -7,6 +7,7 @@ import { useActiveAccount, useActiveWalletChain, useSwitchActiveWalletChain } fr
 import { Button } from "./ui/button";
 import Spinner from "./spinner";
 import { Abi } from "viem";
+import { toast } from "sonner";
 
 interface TransactionButtonProps {
     requiredAllowance?: number;
@@ -14,6 +15,7 @@ interface TransactionButtonProps {
     chain?: Chain;
     transaction?: PreparedTransaction<Abi>;
     label: string;
+    toastLabel: string;
 }
 
 export default function TransactionButton({
@@ -22,6 +24,7 @@ export default function TransactionButton({
     chain,
     transaction,
     label,
+    toastLabel
 }: TransactionButtonProps) {
     const activeAccount = useActiveAccount();
     const activeWalletChain = useActiveWalletChain();
@@ -45,12 +48,18 @@ export default function TransactionButton({
         if (requiredAllowance && requiredAllowance > 0) {
             setApprovalPending(true);
 
-            await ApproveSpending(
+            const approveTxHash = await ApproveSpending(
                 activeAccount,
                 chain,
                 tokenAddress,
                 requiredAllowance
             );
+
+            if (approveTxHash) {
+                toast("Approve transaction", {
+                    description: approveTxHash
+                });
+            }
 
             setApprovalPending(false);
 
@@ -65,17 +74,17 @@ export default function TransactionButton({
             setTransactionPending(true);
 
             try {
-                const txRecipt = await sendTransaction({
+                const txResult = await sendTransaction({
                     account: activeAccount,
                     transaction: transaction
                 });
 
-                await waitForReceipt({
-                    client: thirdwebClient,
-                    chain: chain,
-                    transactionHash: txRecipt.transactionHash
-                });
-            } catch { }
+                if (txResult) {
+                    toast(toastLabel, {
+                        description: txResult.transactionHash
+                    });
+                }
+            } catch (error) { console.log(error); }
 
             setTransactionPending(false);
         }

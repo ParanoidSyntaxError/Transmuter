@@ -366,6 +366,7 @@ export default function DepositCard() {
                 chain={srcNetwork?.chain}
                 transaction={depositTx}
                 label="Deposit"
+                toastLabel="Deposit transaction"
             />
         </Card>
     );

@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ThirdwebProvider } from "thirdweb/react";
+import { Toaster } from "@/components/ui/sonner"
 
 const inter = Inter({
     subsets: ["latin"]
@@ -32,7 +33,10 @@ export default function RootLayout({
                         defaultTheme="dark"
                         disableTransitionOnChange
                     >
-                        {children}
+                        <main>
+                            {children}
+                        </main>
+                        <Toaster />
                     </ThemeProvider>
                 </ThirdwebProvider>
             </body>

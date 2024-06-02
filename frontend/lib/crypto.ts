@@ -157,12 +157,6 @@ export async function ApproveSpending(activeAccount: Account | undefined, chain:
                     transaction: approveTx
                 });
     
-                await waitForReceipt({
-                    client: thirdwebClient,
-                    chain: chain,
-                    transactionHash: txRecipt.transactionHash
-                });
-
                 return txRecipt.transactionHash;
             } catch(err) {
                 console.log(err);
